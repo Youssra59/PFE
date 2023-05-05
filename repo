@@ -1,1 +1,433 @@
+"""
+Model exported as python.
+Name : modeleur_generique
+Group : 
+With QGIS : 32603
+"""
+
+from qgis.core import QgsProcessing
+from qgis.core import QgsProcessingAlgorithm
+from qgis.core import QgsProcessingMultiStepFeedback
+from qgis.core import QgsProcessingParameterVectorLayer
+from qgis.core import QgsProcessingParameterDistance
+from qgis.core import QgsProcessingParameterFeatureSink
+import processing
+
+
+class Modeleur_generique(QgsProcessingAlgorithm):
+
+    def initAlgorithm(self, config=None):
+        # Les abonnés (scolaires ou non)
+        self.addParameter(QgsProcessingParameterVectorLayer('Abonns', 'Abonnés', types=[QgsProcessing.TypeVectorPoint], defaultValue=None))
+        self.addParameter(QgsProcessingParameterVectorLayer('Arrts', 'Arrêts', types=[QgsProcessing.TypeVectorPoint], defaultValue=None))
+        self.addParameter(QgsProcessingParameterVectorLayer('Autres', 'Autres', optional=True, types=[QgsProcessing.TypeVectorPoint,QgsProcessing.TypeVectorPolygon], defaultValue=None))
+        self.addParameter(QgsProcessingParameterVectorLayer('Carrayagepopulation', 'Carrayage population', optional=True, types=[QgsProcessing.TypeVectorPolygon], defaultValue=None))
+        self.addParameter(QgsProcessingParameterVectorLayer('Centrecommercial', 'Centre commercial', optional=True, types=[QgsProcessing.TypeVectorPoint,QgsProcessing.TypeVectorPolygon], defaultValue=None))
+        self.addParameter(QgsProcessingParameterDistance('Distancedemarche', 'Distance de marche', parentParameterName='Arrts', minValue=1, maxValue=1000, defaultValue=392))
+        self.addParameter(QgsProcessingParameterVectorLayer('Etablissmentscolaire', 'Etablissement scolaire', optional=True, types=[QgsProcessing.TypeVectorPoint,QgsProcessing.TypeVectorPolygon], defaultValue=None))
+        self.addParameter(QgsProcessingParameterVectorLayer('Gares', 'Gares', optional=True, types=[QgsProcessing.TypeVectorPoint,QgsProcessing.TypeVectorPolygon], defaultValue=None))
+        self.addParameter(QgsProcessingParameterVectorLayer('Mairies', 'Mairies', optional=True, types=[QgsProcessing.TypeVectorPoint,QgsProcessing.TypeVectorPolygon], defaultValue=None))
+        self.addParameter(QgsProcessingParameterVectorLayer('Routes', 'Routes', types=[QgsProcessing.TypeVectorLine], defaultValue=None))
+        self.addParameter(QgsProcessingParameterVectorLayer('entreprisesiren', 'carroyage emploi', types=[QgsProcessing.TypeVectorPolygon], defaultValue=None))
+        self.addParameter(QgsProcessingParameterFeatureSink('CarroyagePopulationParArrt', 'Carroyage population par arrêt', type=QgsProcessing.TypeVectorAnyGeometry, createByDefault=True, defaultValue=None))
+        self.addParameter(QgsProcessingParameterFeatureSink('CarroyageEmploiParArrt', 'Carroyage emploi par arrêt', type=QgsProcessing.TypeVectorAnyGeometry, createByDefault=True, defaultValue=None))
+        self.addParameter(QgsProcessingParameterFeatureSink('', '3', type=QgsProcessing.TypeVectorAnyGeometry, createByDefault=True, defaultValue=None))
+        self.addParameter(QgsProcessingParameterFeatureSink('', '1', type=QgsProcessing.TypeVectorAnyGeometry, createByDefault=True, defaultValue=None))
+        self.addParameter(QgsProcessingParameterFeatureSink('PopulationDesservieParArrts', 'Population desservie par arrêts', optional=True, type=QgsProcessing.TypeVectorAnyGeometry, createByDefault=True, defaultValue=None))
+        self.addParameter(QgsProcessingParameterFeatureSink('EmploiDesservieParArrtsNonCumulable', 'Emploi desservie par arrêts (non cumulable)', optional=True, type=QgsProcessing.TypeVectorAnyGeometry, createByDefault=True, defaultValue=None))
+        self.addParameter(QgsProcessingParameterFeatureSink('NombreDabonns2', "Nombre d'abonnés (2)", type=QgsProcessing.TypeVectorAnyGeometry, createByDefault=True, supportsAppend=True, defaultValue=None))
+        self.addParameter(QgsProcessingParameterFeatureSink('', '2', type=QgsProcessing.TypeVectorPoint, createByDefault=True, defaultValue=None))
+
+    def processAlgorithm(self, parameters, context, model_feedback):
+        # Use a multi-step feedback, so that individual child algorithm progress reports are adjusted for the
+        # overall progress through the model
+        feedback = QgsProcessingMultiStepFeedback(21, model_feedback)
+        results = {}
+        outputs = {}
+
+        # Agrégation arrêt
+        alg_params = {
+            'AGGREGATES': [{'aggregate': 'first_value','delimiter': ',','input': '"code_arret"','length': 50,'name': 'code_arret','precision': 0,'type': 10},{'aggregate': 'first_value','delimiter': ',','input': '"numero_ligne"','length': 20,'name': 'numero_ligne','precision': 0,'type': 10},{'aggregate': 'first_value','delimiter': ',','input': '"nom_court"','length': 50,'name': 'nom_court','precision': 0,'type': 10},{'aggregate': 'first_value','delimiter': ',','input': '"num_ligne"','length': -1,'name': 'num_ligne','precision': 0,'type': 2},{'aggregate': 'first_value','delimiter': ',','input': '"id"','length': -1,'name': 'id','precision': 0,'type': 2}],
+            'GROUP_BY': 'nom_court',
+            'INPUT': parameters['Arrts'],
+            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+        }
+        outputs['AgrgationArrt'] = processing.run('native:aggregate', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        feedback.setCurrentStep(1)
+        if feedback.isCanceled():
+            return {}
+
+        # Zone de desserte (de la couche)
+        alg_params = {
+            'DEFAULT_DIRECTION': 2,  # Les 2 directions
+            'DEFAULT_SPEED': 50,
+            'DIRECTION_FIELD': '',
+            'INCLUDE_BOUNDS': False,
+            'INPUT': parameters['Routes'],
+            'SPEED_FIELD': '',
+            'START_POINTS': parameters['Arrts'],
+            'STRATEGY': 0,  # Le plus court
+            'TOLERANCE': 0,
+            'TRAVEL_COST2': parameters['Distancedemarche'],
+            'VALUE_BACKWARD': '',
+            'VALUE_BOTH': '',
+            'VALUE_FORWARD': '',
+            'OUTPUT_LINES': QgsProcessing.TEMPORARY_OUTPUT
+        }
+        outputs['ZoneDeDesserteDeLaCouche'] = processing.run('native:serviceareafromlayer', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        feedback.setCurrentStep(2)
+        if feedback.isCanceled():
+            return {}
+
+        # Zone de desserte abonnes 0
+        alg_params = {
+            'DEFAULT_DIRECTION': 2,  # Les 2 directions
+            'DEFAULT_SPEED': 5,
+            'DIRECTION_FIELD': '',
+            'INCLUDE_BOUNDS': False,
+            'INPUT': parameters['Routes'],
+            'SPEED_FIELD': '',
+            'START_POINTS': outputs['AgrgationArrt']['OUTPUT'],
+            'STRATEGY': 0,  # Le plus court
+            'TOLERANCE': 0,
+            'TRAVEL_COST2': 300,
+            'VALUE_BACKWARD': '',
+            'VALUE_BOTH': '',
+            'VALUE_FORWARD': '',
+            'OUTPUT_LINES': QgsProcessing.TEMPORARY_OUTPUT
+        }
+        outputs['ZoneDeDesserteAbonnes0'] = processing.run('native:serviceareafromlayer', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        feedback.setCurrentStep(3)
+        if feedback.isCanceled():
+            return {}
+
+        # Tampon abo 0
+        alg_params = {
+            'DISSOLVE': False,
+            'DISTANCE': 30,
+            'END_CAP_STYLE': 0,  # Rond
+            'INPUT': outputs['ZoneDeDesserteAbonnes0']['OUTPUT_LINES'],
+            'JOIN_STYLE': 2,  # Oblique
+            'MITER_LIMIT': 2,
+            'SEGMENTS': 5,
+            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+        }
+        outputs['TamponAbo0'] = processing.run('native:buffer', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        feedback.setCurrentStep(4)
+        if feedback.isCanceled():
+            return {}
+
+        # Agrégation abo 0
+        alg_params = {
+            'AGGREGATES': [{'aggregate': 'first_value','delimiter': ',','input': '"numero_ligne"','length': 20,'name': 'numero_ligne','precision': 0,'type': 10},{'aggregate': 'first_value','delimiter': ',','input': '"nom_court"','length': 50,'name': 'nom_court','precision': 0,'type': 10},{'aggregate': 'first_value','delimiter': ',','input': '"id"','length': 0,'name': 'id','precision': 0,'type': 2}],
+            'GROUP_BY': 'nom_court',
+            'INPUT': outputs['TamponAbo0']['OUTPUT'],
+            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+        }
+        outputs['AgrgationAbo0'] = processing.run('native:aggregate', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        feedback.setCurrentStep(5)
+        if feedback.isCanceled():
+            return {}
+
+        # Tampon
+        alg_params = {
+            'DISSOLVE': False,
+            'DISTANCE': 50,
+            'END_CAP_STYLE': 0,  # Rond
+            'INPUT': outputs['ZoneDeDesserteDeLaCouche']['OUTPUT_LINES'],
+            'JOIN_STYLE': 0,  # Rond
+            'MITER_LIMIT': 2,
+            'SEGMENTS': 5,
+            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+        }
+        outputs['Tampon'] = processing.run('native:buffer', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        feedback.setCurrentStep(6)
+        if feedback.isCanceled():
+            return {}
+
+        # Tampon cumulé
+        alg_params = {
+            'DISSOLVE': False,
+            'DISTANCE': 50,
+            'END_CAP_STYLE': 0,  # Rond
+            'INPUT': outputs['ZoneDeDesserteDeLaCouche']['OUTPUT_LINES'],
+            'JOIN_STYLE': 0,  # Rond
+            'MITER_LIMIT': 2,
+            'SEGMENTS': 5,
+            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+        }
+        outputs['TamponCumul'] = processing.run('native:buffer', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        feedback.setCurrentStep(7)
+        if feedback.isCanceled():
+            return {}
+
+        # Agrégation tampon
+        # Cette agrégation permet d'agréger les noms d'arrêts pour éviter les doublons d'arrêts superposées
+
+        alg_params = {
+            'AGGREGATES': [{'aggregate': 'first_value','delimiter': ',','input': '"code_arret"','length': 50,'name': 'code_arret','precision': 0,'type': 10},{'aggregate': 'first_value','delimiter': ',','input': '"numero_ligne"','length': 20,'name': 'numero_ligne','precision': 0,'type': 10},{'aggregate': 'first_value','delimiter': ',','input': '"nom_court"','length': 50,'name': 'nom_court','precision': 0,'type': 10},{'aggregate': 'first_value','delimiter': ',','input': '"id"','length': -1,'name': 'id','precision': 0,'type': 2}],
+            'GROUP_BY': 'array(nom_court,numero_ligne)',
+            'INPUT': outputs['Tampon']['OUTPUT'],
+            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+        }
+        outputs['AgrgationTampon'] = processing.run('native:aggregate', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        feedback.setCurrentStep(8)
+        if feedback.isCanceled():
+            return {}
+
+        # Joindre non cumulable
+        alg_params = {
+            'DISCARD_NONMATCHING': True,
+            'INPUT': parameters['Carrayagepopulation'],
+            'JOIN': outputs['AgrgationTampon']['OUTPUT'],
+            'JOIN_FIELDS': [''],
+            'METHOD': 0,  # Créer une entité distincte pour chaque entité correspondante (un à plusieurs)
+            'PREDICATE': [0],  # intersecte
+            'PREFIX': '',
+            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+        }
+        outputs['JoindreNonCumulable'] = processing.run('native:joinattributesbylocation', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        feedback.setCurrentStep(9)
+        if feedback.isCanceled():
+            return {}
+
+        # Extraire par localisation abo 0
+        alg_params = {
+            'INPUT': parameters['Abonns'],
+            'INTERSECT': outputs['AgrgationAbo0']['OUTPUT'],
+            'PREDICATE': [0],  # intersecte
+            'OUTPUT': parameters['']
+        }
+        outputs['ExtraireParLocalisationAbo0'] = processing.run('native:extractbylocation', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+        results[''] = outputs['ExtraireParLocalisationAbo0']['OUTPUT']
+
+        feedback.setCurrentStep(10)
+        if feedback.isCanceled():
+            return {}
+
+        # Join loc emp (nn cumulable)
+        alg_params = {
+            'DISCARD_NONMATCHING': True,
+            'INPUT': parameters['entreprisesiren'],
+            'JOIN': outputs['AgrgationTampon']['OUTPUT'],
+            'JOIN_FIELDS': [''],
+            'METHOD': 0,  # Créer une entité distincte pour chaque entité correspondante (un à plusieurs)
+            'PREDICATE': [0],  # intersecte
+            'PREFIX': '',
+            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+        }
+        outputs['JoinLocEmpNnCumulable'] = processing.run('native:joinattributesbylocation', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        feedback.setCurrentStep(11)
+        if feedback.isCanceled():
+            return {}
+
+        # Agrégation tampon regroupé
+        alg_params = {
+            'AGGREGATES': [{'aggregate': 'first_value','delimiter': ',','input': '"code_arret"','length': 50,'name': 'code_arret','precision': 0,'type': 10},{'aggregate': 'first_value','delimiter': ',','input': '"numero_ligne"','length': 20,'name': 'numero_ligne','precision': 0,'type': 10},{'aggregate': 'first_value','delimiter': ',','input': '"nom_court"','length': 50,'name': 'nom_court','precision': 0,'type': 10}],
+            'GROUP_BY': '"numero_ligne"  ',
+            'INPUT': outputs['TamponCumul']['OUTPUT'],
+            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+        }
+        outputs['AgrgationTamponRegroup'] = processing.run('native:aggregate', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        feedback.setCurrentStep(12)
+        if feedback.isCanceled():
+            return {}
+
+        # Agrégation pop nn cumulable
+        alg_params = {
+            'AGGREGATES': [{'aggregate': 'first_value','delimiter': ',','input': '"code_arret"','length': 50,'name': 'code_arret','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'aggregate': 'first_value','delimiter': ',','input': '"numero_ligne"','length': 20,'name': 'numero_ligne','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'aggregate': 'first_value','delimiter': ',','input': '"nom_court"','length': 50,'name': 'nom_court','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'aggregate': 'sum','delimiter': ',','input': '"ind_c"','length': 0,'name': 'ind_c','precision': 0,'sub_type': 0,'type': 4,'type_name': 'int8'},{'aggregate': 'sum','delimiter': ',','input': '"ind_1824"','length': 0,'name': 'ind_1824','precision': 0,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'aggregate': 'sum','delimiter': ',','input': '"ind_2564"','length': 0,'name': 'ind_2564','precision': 0,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'aggregate': 'sum','delimiter': ',','input': '"ind_6574"','length': 0,'name': 'ind_6574','precision': 0,'sub_type': 0,'type': 6,'type_name': 'double precision'}],
+            'GROUP_BY': 'array(code_arret,nom_court,numero_ligne)',
+            'INPUT': outputs['JoindreNonCumulable']['OUTPUT'],
+            'OUTPUT': parameters['CarroyagePopulationParArrt']
+        }
+        outputs['AgrgationPopNnCumulable'] = processing.run('native:aggregate', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+        results['CarroyagePopulationParArrt'] = outputs['AgrgationPopNnCumulable']['OUTPUT']
+
+        feedback.setCurrentStep(13)
+        if feedback.isCanceled():
+            return {}
+
+        # Distance au plus proche centre abo 0
+        alg_params = {
+            'FIELD': 'nom_court',
+            'HUBS': parameters['Arrts'],
+            'INPUT': outputs['ExtraireParLocalisationAbo0']['OUTPUT'],
+            'UNIT': 0,  # Mètre
+            'OUTPUT': parameters['']
+        }
+        outputs['DistanceAuPlusProcheCentreAbo0'] = processing.run('qgis:distancetonearesthubpoints', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+        results[''] = outputs['DistanceAuPlusProcheCentreAbo0']['OUTPUT']
+
+        feedback.setCurrentStep(14)
+        if feedback.isCanceled():
+            return {}
+
+        # Agrégation emploi (nn cumulable)
+        alg_params = {
+            'AGGREGATES': [{'aggregate': 'first_value','delimiter': ',','input': '"l1_declare"','length': 254,'name': 'l1_declare','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'aggregate': 'sum','delimiter': ',','input': '"efetcent2"','length': 0,'name': 'efetcent2','precision': 0,'sub_type': 0,'type': 2,'type_name': 'integer'},{'aggregate': 'first_value','delimiter': ',','input': '"code_arret"','length': 50,'name': 'code_arret','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'aggregate': 'first_value','delimiter': ',','input': '"numero_ligne"','length': 20,'name': 'numero_ligne','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'aggregate': 'first_value','delimiter': ',','input': '"nom_court"','length': 50,'name': 'nom_court','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'}],
+            'GROUP_BY': 'array(code_arret,nom_court)',
+            'INPUT': outputs['JoinLocEmpNnCumulable']['OUTPUT'],
+            'OUTPUT': parameters['CarroyageEmploiParArrt']
+        }
+        outputs['AgrgationEmploiNnCumulable'] = processing.run('native:aggregate', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+        results['CarroyageEmploiParArrt'] = outputs['AgrgationEmploiNnCumulable']['OUTPUT']
+
+        feedback.setCurrentStep(15)
+        if feedback.isCanceled():
+            return {}
+
+        # Joindre les attributs par valeur de champ
+        alg_params = {
+            'DISCARD_NONMATCHING': False,
+            'FIELD': 'nom_court',
+            'FIELDS_TO_COPY': [''],
+            'FIELD_2': 'nom_court',
+            'INPUT': outputs['AgrgationArrt']['OUTPUT'],
+            'INPUT_2': outputs['AgrgationEmploiNnCumulable']['OUTPUT'],
+            'METHOD': 1,  # Prendre uniquement les attributs de la première entité correspondante (un à un)
+            'PREFIX': '',
+            'OUTPUT': parameters['EmploiDesservieParArrtsNonCumulable']
+        }
+        outputs['JoindreLesAttributsParValeurDeChamp'] = processing.run('native:joinattributestable', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+        results['EmploiDesservieParArrtsNonCumulable'] = outputs['JoindreLesAttributsParValeurDeChamp']['OUTPUT']
+
+        feedback.setCurrentStep(16)
+        if feedback.isCanceled():
+            return {}
+
+        # Agrégation abo00
+        # Compte le nombre d'abonnés de manière distinct 
+        alg_params = {
+            'AGGREGATES': [{'aggregate': 'first_value','delimiter': ',','input': '"id"','length': 0,'name': 'id','precision': 0,'sub_type': 0,'type': 2,'type_name': 'integer'},{'aggregate': 'count','delimiter': ',','input': '"nom"','length': 0,'name': 'nom','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'aggregate': 'first_value','delimiter': ',','input': '"HubName"','length': 0,'name': 'HubName','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'}],
+            'GROUP_BY': 'HubName',
+            'INPUT': outputs['DistanceAuPlusProcheCentreAbo0']['OUTPUT'],
+            'OUTPUT': parameters['']
+        }
+        outputs['AgrgationAbo00'] = processing.run('native:aggregate', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+        results[''] = outputs['AgrgationAbo00']['OUTPUT']
+
+        feedback.setCurrentStep(17)
+        if feedback.isCanceled():
+            return {}
+
+        # Joindre les attributs par valeur de champ
+        alg_params = {
+            'DISCARD_NONMATCHING': False,
+            'FIELD': 'nom_court',
+            'FIELDS_TO_COPY': [''],
+            'FIELD_2': 'nom_court',
+            'INPUT': outputs['AgrgationArrt']['OUTPUT'],
+            'INPUT_2': outputs['AgrgationPopNnCumulable']['OUTPUT'],
+            'METHOD': 0,  # Créer une entité distincte pour chaque entité correspondante (un à plusieurs)
+            'PREFIX': '',
+            'OUTPUT': parameters['PopulationDesservieParArrts']
+        }
+        outputs['JoindreLesAttributsParValeurDeChamp'] = processing.run('native:joinattributestable', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+        results['PopulationDesservieParArrts'] = outputs['JoindreLesAttributsParValeurDeChamp']['OUTPUT']
+
+        feedback.setCurrentStep(18)
+        if feedback.isCanceled():
+            return {}
+
+        # Joindre les attributs par valeur de champ abo 00
+        alg_params = {
+            'DISCARD_NONMATCHING': False,
+            'FIELD': 'nom_court',
+            'FIELDS_TO_COPY': [''],
+            'FIELD_2': 'HubName',
+            'INPUT': outputs['AgrgationArrt']['OUTPUT'],
+            'INPUT_2': outputs['AgrgationAbo00']['OUTPUT'],
+            'METHOD': 0,  # Créer une entité distincte pour chaque entité correspondante (un à plusieurs)
+            'PREFIX': '',
+            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+        }
+        outputs['JoindreLesAttributsParValeurDeChampAbo00'] = processing.run('native:joinattributestable', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        feedback.setCurrentStep(19)
+        if feedback.isCanceled():
+            return {}
+
+        # Renommer le champ
+        alg_params = {
+            'FIELD': 'nom',
+            'INPUT': outputs['JoindreLesAttributsParValeurDeChampAbo00']['OUTPUT'],
+            'NEW_NAME': "Nombre d'abonnés",
+            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+        }
+        outputs['RenommerLeChamp'] = processing.run('native:renametablefield', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        feedback.setCurrentStep(20)
+        if feedback.isCanceled():
+            return {}
+
+        # Refactoriser les champs
+        alg_params = {
+            'FIELDS_MAPPING': [{'expression': '"numero_ligne"','length': 20,'name': 'numero_ligne','precision': 0,'type': 10},{'expression': '"nom_court"','length': 50,'name': 'nom_court','precision': 0,'type': 10},{'expression': '"id"','length': 0,'name': 'id','precision': 0,'type': 2},{'expression': '"Nombre d\'abonnés"','length': 0,'name': "Nombre d'abonnés",'precision': 0,'type': 2}],
+            'INPUT': outputs['RenommerLeChamp']['OUTPUT'],
+            'OUTPUT': parameters['NombreDabonns2']
+        }
+        outputs['RefactoriserLesChamps'] = processing.run('native:refactorfields', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+        results['NombreDabonns2'] = outputs['RefactoriserLesChamps']['OUTPUT']
+        return results
+
+    def name(self):
+        return 'modeleur_generique'
+
+    def displayName(self):
+        return 'modeleur_generique'
+
+    def group(self):
+        return ''
+
+    def groupId(self):
+        return ''
+
+    def shortHelpString(self):
+        return """<html><body><p>Ce modeleur permet de calculer la population autour d'arrêts ainsi que les effectifs des entreprises. Il cherche aussi les etablissements scolaires, les gares et les mairies à proximité.
+
+Il existe une distinction entre un nombre cumulé ou non.
+	EXEMPLE
+
+Le cumul du nombre de salarié va amener le modeleur à calculer en doublon ce nombre (un arret qui appartient à deux carrés [carroyage] va comptabiliser deux fois ces memes carrés dans le calcul)
+
+Pour le cumulable, le modeleurva utiliser la zone de desserte qui a le plus grand chevauchement pour n'utiliser que ce dernier.</p>
+<h2>Paramètres en entrée</h2>
+<h3>Abonnés</h3>
+<p>Données produites par TADAO</p>
+<h3>Arrêts</h3>
+<p>Arrêts de bus.
+La couche de cette dernière peut être filtrée pour affiné les recherche (exemple : les arrêts desservant la Bulle 4)</p>
+<h3>Autres</h3>
+<p>Ce modeleur permet d'extraire des établissements publics comme les écoles ou les mairies. L'utilisateur peut également extraire ses propres données, elles doivent être sous fome de points.</p>
+<h3>Carrayage population</h3>
+<p>Le carroyage population est une données disponible sur le site gouvernementale. 
+Le choix des carroyages (dimension du carré) n'impacte pas le traitement.
+</p>
+<h3>carroyage emploi</h3>
+<p>Le carroyage emploi est une données disponible sur le site gouvernementale. 
+Le choix des carroyages (dimension du carré) n'impacte pas le traitement.</p>
+<br><p align="right">Auteur de l'algorithme: Youssra El Moussaoui
+Apprentie Ingénieure Géomatique et Génie Urbain
+
+Contact : youssra.el-moussaoui@tadao.fr</p><p align="right">Auteur de l'aide: Youssra El Moussaoui
+Apprentie Ingénieure Géomatique et Génie Urbain
+
+Contact : youssra.el-moussaoui@tadao.fr</p><p align="right">Version de l'algorithme: Version 3
+Modifié le 11/02/2022
+</p></body></html>"""
+
+    def createInstance(self):
+        return Modeleur_generique()
+
 
